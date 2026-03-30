@@ -47,12 +47,11 @@ class SpeedTestManager: NSObject, ObservableObject {
             
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 let latency = Date().timeIntervalSince(startTime) * 1000
-                await MainActor.run {
-                    self.latency = latency
-                }
+                self.latency = latency
             }
         } catch {
-            print("Latency test error: \(error)")
+            print("Latency test error: \(error.localizedDescription)")
+            self.latency = 0
         }
     }
     
@@ -61,19 +60,19 @@ class SpeedTestManager: NSObject, ObservableObject {
         
         do {
             let url = URL(string: "https://speed.cloudflare.com/__down?bytes=\(testFileSize)")!
-            let (_, _) = try await URLSession.shared.data(from: url)
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 60
             
-            let downloadTime = Date().timeIntervalSince(startTime)
-            let downloadMbps = (Double(testFileSize) * 8) / (downloadTime * 1_000_000)
+            let (_, response) = try await URLSession.shared.data(for: request)
             
-            await MainActor.run {
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                let downloadTime = Date().timeIntervalSince(startTime)
+                let downloadMbps = (Double(testFileSize) * 8) / (downloadTime * 1_000_000)
                 self.downloadSpeed = max(0, downloadMbps)
             }
         } catch {
-            print("Download test error: \(error)")
-            await MainActor.run {
-                self.downloadSpeed = 0
-            }
+            print("Download test error: \(error.localizedDescription)")
+            self.downloadSpeed = 0
         }
     }
     
@@ -81,34 +80,22 @@ class SpeedTestManager: NSObject, ObservableObject {
         let startTime = Date()
         
         do {
-            var request = URLRequest(url: URL(string: "https://httpbin.org/post")!)
+            let url = URL(string: "https://httpbin.org/post")!
+            var request = URLRequest(url: url)
             request.httpMethod = "POST"
+            request.timeoutInterval = 60
             
             let uploadData = Data(count: uploadFileSize)
-            let (_, response) = try await URLSession.shared.data(for: request, from: uploadData)
+            let (_, response) = try await URLSession.shared.upload(for: request, from: uploadData)
             
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 let uploadTime = Date().timeIntervalSince(startTime)
                 let uploadMbps = (Double(uploadFileSize) * 8) / (uploadTime * 1_000_000)
-                
-                await MainActor.run {
-                    self.uploadSpeed = max(0, uploadMbps)
-                }
+                self.uploadSpeed = max(0, uploadMbps)
             }
         } catch {
-            print("Upload test error: \(error)")
-            await MainActor.run {
-                self.uploadSpeed = 0
-            }
+            print("Upload test error: \(error.localizedDescription)")
+            self.uploadSpeed = 0
         }
-    }
-}
-
-// Extension for URLSession to support data upload
-extension URLSession {
-    func data(for request: URLRequest, from data: Data) async throws -> (Data, URLResponse) {
-        var request = request
-        request.httpBody = data
-        return try await self.data(for: request)
     }
 }

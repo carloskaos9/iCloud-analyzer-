@@ -11,6 +11,7 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     private let locationManager = CLLocationManager()
     private let geocoder = CLGeocoder()
+    private var isUpdating = false
     
     override init() {
         super.init()
@@ -24,12 +25,16 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     
     func startUpdatingLocation() {
+        guard !isUpdating else { return }
+        
         if CLLocationManager.locationServicesEnabled() {
+            isUpdating = true
             locationManager.startUpdatingLocation()
         }
     }
     
     func stopUpdatingLocation() {
+        isUpdating = false
         locationManager.stopUpdatingLocation()
     }
     
@@ -44,8 +49,16 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         
         self.location = location.coordinate
         
+        // Stop updating after first successful location
+        stopUpdatingLocation()
+        
         // Reverse geocode to get city and country
         geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, error in
+            if let error = error {
+                print("Geocoding error: \(error.localizedDescription)")
+                return
+            }
+            
             if let placemark = placemarks?.first {
                 DispatchQueue.main.async {
                     self?.city = placemark.locality ?? "Desconhecido"
@@ -56,7 +69,8 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print("Location error: \(error)")
+        print("Location error: \(error.localizedDescription)")
+        stopUpdatingLocation()
     }
     
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -64,5 +78,9 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         if manager.authorizationStatus == .authorizedWhenInUse {
             startUpdatingLocation()
         }
+    }
+    
+    deinit {
+        stopUpdatingLocation()
     }
 }

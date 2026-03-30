@@ -2,6 +2,8 @@ import Foundation
 import Network
 import NetworkExtension
 import Combine
+import CoreTelephony
+import Darwin
 
 @MainActor
 class NetworkManager: NSObject, ObservableObject {
@@ -55,26 +57,33 @@ class NetworkManager: NSObject, ObservableObject {
     }
     
     private func detectNetworkGeneration() {
-        // Detect 4G, 5G, LTE using CTCellularData
-        #if os(iOS)
-        let cellularData = CTCellularData()
+        let telephonyInfo = CTTelephonyNetworkInfo()
+        
         if #available(iOS 14.1, *) {
-            if let currentRadioAccessTechnology = CTTelephonyNetworkInfo().serviceCurrentRadioAccessTechnology?.values.first {
+            if let currentRadioAccessTechnology = telephonyInfo.serviceCurrentRadioAccessTechnology?.values.first {
                 switch currentRadioAccessTechnology {
-                case .WCDMA:
+                case CTRadioAccessTechnologyWCDMA:
                     networkGeneration = "3G"
-                case .HSDPA, .HSUPA:
+                case CTRadioAccessTechnologyHSDPA, CTRadioAccessTechnologyHSUPA:
                     networkGeneration = "3G+"
-                case .LTE:
+                case CTRadioAccessTechnologyLTE:
                     networkGeneration = "4G LTE"
-                case .CTRadioAccessTechnologyNRNSA, .CTRadioAccessTechnologyNR:
-                    networkGeneration = "5G"
                 default:
-                    networkGeneration = "Desconhecido"
+                    if #available(iOS 14.1, *) {
+                        if currentRadioAccessTechnology == CTRadioAccessTechnologyNR || 
+                           currentRadioAccessTechnology == CTRadioAccessTechnologyNRNSA {
+                            networkGeneration = "5G"
+                        } else {
+                            networkGeneration = "Desconhecido"
+                        }
+                    } else {
+                        networkGeneration = "Desconhecido"
+                    }
                 }
             }
+        } else {
+            networkGeneration = "Desconhecido"
         }
-        #endif
     }
     
     private func fetchWiFiInfo() {
@@ -91,32 +100,68 @@ class NetworkManager: NSObject, ObservableObject {
         var address: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>? = nil
         
-        if getifaddrs(&ifaddr) == 0 {
-            var ptr = ifaddr
-            while ptr != nil {
-                defer { ptr = ptr?.pointee.ifa_next }
-                
-                guard let interface = ptr?.pointee else { return nil }
-                let addrFamily = interface.ifa_addr.pointee.sa_family
-                
-                if addrFamily == UInt8(AF_INET) {
-                    if let name = String(cString: interface.ifa_name as UnsafePointer<CChar>, encoding: .utf8),
-                       (name == "en0" || name == "en1" || name == "en2" || name == "en3") {
-                        var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                        getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
-                                   &hostname, socklen_t(hostname.count), nil, socklen_t(0), NI_NUMERICHOST)
+        guard getifaddrs(&ifaddr) == 0 else {
+            return nil
+        }
+        
+        defer {
+            if ifaddr != nil {
+                freeifaddrs(ifaddr)
+            }
+        }
+        
+        var ptr = ifaddr
+        while ptr != nil {
+            defer { ptr = ptr?.pointee.ifa_next }
+            
+            guard let interface = ptr?.pointee else { continue }
+            
+            // Check if address is valid
+            guard interface.ifa_addr != nil else { continue }
+            
+            let addrFamily = interface.ifa_addr.pointee.sa_family
+            
+            if addrFamily == UInt8(AF_INET) {
+                if let name = String(cString: interface.ifa_name, encoding: .utf8),
+                   (name == "en0" || name == "en1" || name == "en2" || name == "en3") {
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    
+                    let result = getnameinfo(
+                        interface.ifa_addr,
+                        socklen_t(interface.ifa_addr.pointee.sa_len),
+                        &hostname,
+                        socklen_t(hostname.count),
+                        nil,
+                        socklen_t(0),
+                        NI_NUMERICHOST
+                    )
+                    
+                    if result == 0 {
                         address = String(cString: hostname)
+                        break
                     }
                 }
             }
-            freeifaddrs(ifaddr)
         }
+        
         return address
     }
     
     func fetchPublicIP() {
-        let url = URL(string: "https://api.ipify.org?format=json")!
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        guard let url = URL(string: "https://api.ipify.org?format=json") else {
+            publicIP = "Erro"
+            return
+        }
+        
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
+            if let error = error {
+                print("Erro ao buscar IP público: \(error)")
+                DispatchQueue.main.async {
+                    self?.publicIP = "Erro"
+                }
+                return
+            }
+            
             if let data = data,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: String],
                let ip = json["ip"] {
@@ -164,13 +209,3 @@ struct ConnectedDevice: Identifiable {
     let mac: String
     let type: String
 }
-
-// Import required frameworks
-import CoreTelephony
-import Network
-import Darwin
-
-// Helper for network info
-#if os(iOS)
-import CoreTelephony
-#endif
